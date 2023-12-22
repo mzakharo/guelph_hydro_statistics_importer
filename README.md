@@ -1,6 +1,6 @@
 # Guelph Hydro Statistics Importer for Home Assistant
 
-This Python script retrieves statistics from [Guelph Hydro](https://www.guelphhydro.com/) and imports them into Home Assistant via the [WebSocket API](https://developers.home-assistant.io/docs/api/websocket/) and InfluxDB.
+This Python script retrieves statistics from [Guelph Hydro](https://www.guelphhydro.com/) and imports them into InfluxDB and Home Assistant via the [WebSocket API](https://developers.home-assistant.io/docs/api/websocket/).
 
 Long Term Statistics will be created in Home Assistant and usable in the Energy Dashboard.
 
