@@ -4,7 +4,7 @@ import aiohttp
 import argparse
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from enum import Enum
 import math
 import os
@@ -16,9 +16,50 @@ import traceback
 from typing import Any, Dict, List, Optional
 import yaml
 
+
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
+import requests
+import pandas as pd
+from io import BytesIO
+
+def get_df(start , end, username, password):
+    with requests.Session() as s:
+        r = s.post(
+            "https://apps.guelphhydro.com/AccountOnlineWeb/AccountOnlineCommand",
+            params={"command": "login", "TokenID": "null", "Reset": "null"},
+            data={
+                "acn": username,
+                "pass": password,
+                "Submit": "Sign-On",
+            },
+        )
+        try:
+            '''
+            r = s.post(
+                "https://apps.guelphhydro.com/AccountOnlineWeb/ChartServlet",
+                params={"DownloadRawData": "true", "UsageType": "DownloadRawData"},
+                data={"StartDate": date, "EndDate": date, "Submit": "Submit"},
+            )
+            '''
+            r = s.post(
+                "https://apps.guelphhydro.com/AccountOnlineWeb/ChartServlet",
+                params={"DownloadRawDataVertical": "true", "UsageType": "DownloadRawDataVertical"},
+                data={"StartDate": start, "EndDate": end, "framing" : "TOU", "Submit": "Submit"},
+            )
+            assert (r.status_code == 200)
+            return pd.read_csv(BytesIO(r.content))
+        finally:
+            r = s.get(
+                "https://apps.guelphhydro.com/AccountOnlineWeb/AccountOnlineCommand",
+                params={"command": "logout"},
+            )
+
+
+
 MED_CONFIG_DATE_FORMAT: str = "%Y-%m-%d"
 MED_CACHE_DB_DATE_FORMAT: str = "%Y-%m-%d %H:%M:%S"
-TZ_PARIS = pytz.timezone('Europe/Paris')
+TZ_PARIS = pytz.timezone('US/Eastern')
 
 # Get the directory containing the script file
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,10 +70,14 @@ os.chdir(script_dir)
 
 @dataclass
 class Config:
+    hydro_username: str
+    hydro_password: str    
+    influx_token: str
+    influx_url: str
+    influx_org: str
+    influx_bucket: str
     ha_url: str
     ha_access_token: str
-    med_cache_db_path: str
-    med_config_path: str
     ha_use_ssl: bool = False
 
     @classmethod
@@ -44,7 +89,7 @@ class Config:
 
 class Unit(Enum):
     KILO_WATT_HOUR = "kWh"
-    EURO = "EUR"
+    EURO = "CAD"
 
 
 class ElectricityType(Enum):
@@ -157,8 +202,9 @@ def create_plan_from_med_config(usage_point_config: Dict[str, str]):
     return plan
 
 
-def export_statistics_from_db(db_cursor: sqlite3.Cursor, stat_metadata: StatisticMetadata, start_date: datetime, sum_offset: float, plan: Plan) -> List[StatisticData]:
+def export_statistics_from_db(df, stat_metadata: StatisticMetadata, start_date: datetime, sum_offset: float, plan: Plan) -> List[StatisticData]:
     is_cost = (stat_metadata.unit_of_measurement == Unit.EURO)
+    '''
     is_base_tariff = (stat_metadata.tariff_type == TariffType.BASE)
     # Select the sum of the value column aggregated by hour
     # The sum is divided by 2 to convert from 'kW for 30 min' to 'kW for 1 hour' (i.e. kWh)
@@ -175,8 +221,27 @@ def export_statistics_from_db(db_cursor: sqlite3.Cursor, stat_metadata: Statisti
 
     db_cursor.execute(query, paramaters)
     rows = db_cursor.fetchall()
+    '''
 
     stats = []
+    my_sum = sum_offset
+    for i, j in df.iterrows():        
+        if i.date() < start_date.date():
+            continue
+        hour = j['Hour in standard time'] - 1
+        kWh = j['Usage']
+        cost = j['TOU Cost']
+        localized_start_date = i + timedelta(hours=hour )
+        value = cost if is_cost else kWh        
+        print(localized_start_date, is_cost, value)
+        my_sum += value
+        stats.append({
+            "start": localized_start_date.isoformat(),
+            "state": value,
+            "sum": my_sum,
+        })
+
+    '''
     # Offset the sum by sum_offset for continuity with the previous stats
     # sum is multiplied by 1000 in order to avoid float precision issue
     # then divided back by 1000
@@ -195,6 +260,7 @@ def export_statistics_from_db(db_cursor: sqlite3.Cursor, stat_metadata: Statisti
 
     # print(stats[0])
     # print(stats[-1])
+    '''
     return stats
 
 
@@ -320,7 +386,7 @@ class HomeAssistantWebSocketHelper:
             # Return last stat
             return result[stat_metadata.id][-1]
 
-    async def import_statistics(self, db_cursor: sqlite3.Cursor, stat_metadata: StatisticMetadata, plan: Plan, force_import_all: bool, days_before_now: int = 10):
+    async def import_statistics(self, df, stat_metadata: StatisticMetadata, plan: Plan, force_import_all: bool, days_before_now: int = 7):
         start_date = stat_metadata.max_date
         sum_offset = 0
 
@@ -343,7 +409,7 @@ class HomeAssistantWebSocketHelper:
         print(
             f"    Exporting statistics from cache since {start_date}, with a sum offset of {sum_offset:.2f} {stat_metadata.unit_of_measurement.value}")
         stats = export_statistics_from_db(
-            db_cursor, stat_metadata, start_date, sum_offset, plan)
+            df, stat_metadata, start_date, sum_offset, plan)
 
         if stats:
             print(
@@ -352,57 +418,114 @@ class HomeAssistantWebSocketHelper:
         else:
             print(f"    No statistics found from cache to import into Home Assistant")
 
-    async def import_statistics_from_med(self, med_cache_db_path: str, med_config: dict, force_import_all: bool):
-        # Check cache.db exists
-        if not os.path.exists(med_cache_db_path):
-            raise FileNotFoundError(
-                f"{med_cache_db_path} not found")
+    async def import_statistics_from_med(self, config: Config, med_config: dict, force_import_all: bool):        
+        
+        dt = date.today()
+        now = datetime.combine(dt, datetime.min.time())
+        now = TZ_PARIS.localize(now) 
 
-        # Connect to cache.db
-        db_connection = sqlite3.connect(med_cache_db_path)
-        db_cursor = db_connection.cursor()
+        begin = (now- timedelta(days=7))
+        yesterday = (now - timedelta(days=1))          
+        max_date = begin
+        print('dates', begin, yesterday)
+        tariff_type = TariffType.BASE
+        electricity_type = ElectricityType.CONSUMPTION
+        stat_metadata = StatisticMetadata(
+            "home", electricity_type, tariff_type, Unit.KILO_WATT_HOUR, max_date)
+        
+        usage_point_config = {"consumption_price_base" : 1, "consumption_price_hc" : 1, "consumption_price_hp" : 1}
+        plan_type = PlanType.BASE
+        if plan_type == PlanType.BASE:
+            plan = PlanBase(to_float(usage_point_config["consumption_price_base"]),
+                            to_float(0))
+        elif plan_type == PlanType.HCHP:
+            plan = PlanHCHP(to_float(usage_point_config["consumption_price_hc"]),
+                            to_float(usage_point_config["consumption_price_hp"]),
+                            to_float(0))
+        else:
+            raise Exception("  Invalid Plan:", plan_type)
+        
+        _df = get_df(begin.strftime('%Y-%m-%d'), yesterday.strftime('%Y-%m-%d'), config.hydro_username, config.hydro_password)
+        df = _df.set_index('Date in standard time')
+        df.index = pd.to_datetime(df.index).tz_localize(TZ_PARIS)
+        #df  = df[df.index >= begin]
+        df = df[df['Usage'] > 0]
+        print(df)
 
-        try:
-            # TODO build list of StatMetadata from config first, then loop on list ?
-            for usage_point_id in med_config["myelectricaldata"]:
-                print("#", usage_point_id)
-                usage_point_config = med_config["myelectricaldata"][usage_point_id]
+        org = config.influx_org 
+        url = config.influx_url 
+        bucket = config.influx_bucket      
+        token=  config.influx_token  
 
-                plan = create_plan_from_med_config(usage_point_config)
+        client = InfluxDBClient(url=url, token=token, org=org)
+        write_api = client.write_api(write_options=SYNCHRONOUS)
 
-                for electricity_type in ElectricityType:
-                    statistics_detail_key = f"{electricity_type.value}_detail"
-                    if usage_point_config[statistics_detail_key] != 'true':
+        points = []
+        decode = {'Off Peak' : 3, 'Mid Peak' : 2, 'On Peak' : 1}
+        for i, j in df.iterrows():
+            hour = j['Hour in standard time'] - 1
+            kWh = j['Usage']
+            TOU = j['TOU Peak']
+            cost = j['TOU Cost']
+
+            TOU = decode.get(TOU, 0)
+            d = i + timedelta(hours=hour )
+            #print(d, kWh, TOU, cost)
+            points.append(
+                    Point("eletricity")
+                    .field("usage", kWh)
+                    .field("cost", cost)
+                    .field("tou", TOU)
+                    .time(d)
+                )
+        write_api.write(bucket=bucket, org=org, record=points)
+        client.close()
+
+        
+        await self.import_statistics(df, stat_metadata, plan, force_import_all)
+        stat_metadata = StatisticMetadata(
+            "home", electricity_type, tariff_type, Unit.EURO, max_date)
+        await self.import_statistics(df, stat_metadata, plan, force_import_all)
+
+        
+        '''
+        # TODO build list of StatMetadata from config first, then loop on list ?
+        for usage_point_id in med_config["myelectricaldata"]:
+            print("#", usage_point_id)
+            usage_point_config = med_config["myelectricaldata"][usage_point_id]
+
+            plan = create_plan_from_med_config(usage_point_config)
+
+            for electricity_type in ElectricityType:
+                statistics_detail_key = f"{electricity_type.value}_detail"
+                if usage_point_config[statistics_detail_key] != 'true':
+                    print(
+                        f"  {statistics_detail_key} not enabled, skipping")
+                    break
+
+                max_date = get_max_date_from_med_config(
+                    usage_point_config, statistics_detail_key)
+
+                for tariff_type in plan.tariff_types[electricity_type]:
+                    print(" ", tariff_type.name,
+                            "ENERGY", electricity_type.name)
+                    stat_metadata = StatisticMetadata(
+                        usage_point_id, electricity_type, tariff_type, Unit.KILO_WATT_HOUR, max_date)
+                    await self.import_statistics(db_cursor, stat_metadata, plan, force_import_all)
+
+                    print(" ", tariff_type.name,
+                            electricity_type.name, "COST")
+                    tariff_price = plan.get_price(
+                        electricity_type, tariff_type)
+                    if (math.isnan(tariff_price)):
                         print(
-                            f"  {statistics_detail_key} not enabled, skipping")
-                        break
-
-                    max_date = get_max_date_from_med_config(
-                        usage_point_config, statistics_detail_key)
-
-                    for tariff_type in plan.tariff_types[electricity_type]:
-                        print(" ", tariff_type.name,
-                              "ENERGY", electricity_type.name)
+                            f"    Tariff's price is not a number, skipping cost statistics export")
+                    else:
+                        print(f"    Price: {tariff_price} EUR/kWh")
                         stat_metadata = StatisticMetadata(
-                            usage_point_id, electricity_type, tariff_type, Unit.KILO_WATT_HOUR, max_date)
+                            usage_point_id, electricity_type, tariff_type, Unit.EURO, max_date)
                         await self.import_statistics(db_cursor, stat_metadata, plan, force_import_all)
-
-                        print(" ", tariff_type.name,
-                              electricity_type.name, "COST")
-                        tariff_price = plan.get_price(
-                            electricity_type, tariff_type)
-                        if (math.isnan(tariff_price)):
-                            print(
-                                f"    Tariff's price is not a number, skipping cost statistics export")
-                        else:
-                            print(f"    Price: {tariff_price} EUR/kWh")
-                            stat_metadata = StatisticMetadata(
-                                usage_point_id, electricity_type, tariff_type, Unit.EURO, max_date)
-                            await self.import_statistics(db_cursor, stat_metadata, plan, force_import_all)
-
-        finally:
-            db_cursor.close()
-            db_connection.close()
+            '''
 
     async def delete_all_med_statistics(self):
         result = await self.recorder_list_statistic_ids()
@@ -427,10 +550,7 @@ async def main(args: argparse.Namespace) -> int:
         # Read script_config.yaml
         config = Config.load()
 
-        # Read MyElectricalData config.yaml
-        with open(os.path.abspath(config.med_config_path)) as file:
-            med_config = yaml.safe_load(file)
-
+        
         # Create the WebSocket connection
         url = f"{'wss' if config.ha_use_ssl else 'ws'}://{config.ha_url}/api/websocket"
         print("Connecting to websocket at", url)
@@ -448,13 +568,7 @@ async def main(args: argparse.Namespace) -> int:
                     await ha_ws.delete_all_med_statistics()
 
                 else:
-                    await ha_ws.import_statistics_from_med(config.med_cache_db_path, med_config, args.force_all)
-
-    except Exception as e:
-        tb = traceback.extract_tb(e.__traceback__)
-        print(f"ERROR on line {tb[0].lineno}: {tb[0].line}", file=sys.stderr)
-        print(f"{type(e).__name__} - {e}", file=sys.stderr)
-        return 1
+                    await ha_ws.import_statistics_from_med(config, None, args.force_all)
 
     finally:
         print(f"Elapsed time: {time.time() - start_time:.2f} seconds")
