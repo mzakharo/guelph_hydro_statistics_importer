@@ -9,8 +9,15 @@ ha_use_ssl: false
 # Long-Lived access token from Home Assistant
 ha_access_token: "xxxxxx"
 
-# File path the to cache database of MyElectricalData
-med_cache_db_path: "../myelectricaldata/cache.db"
+# Guelph Hydro username
+hydro_username: 'xxxxxx'
 
-# Path to the configuration file of MyElectricalData
-med_config_path: "../myelectricaldata/config.yaml"
+# Guelph Hydro password
+hydro_password: 'xxxxxx'
+
+#InfluxDB access configuration
+influx_token: 'xxxx'
+influx_url: 'http://localhost:8086'
+influx_bucket: 'xxxx' 
+influx_org: 'xxxx'
+
