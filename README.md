@@ -1,14 +1,13 @@
-# MyElectricalData Statistics Importer for Home Assistant
+# Guelph Hydro Statistics Importer for Home Assistant
 
-This Python script retrieves statistics from [MyElectricalData](https://github.com/m4dm4rtig4n/myelectricaldata/)'s cache database and imports them into Home Assistant via the [WebSocket API](https://developers.home-assistant.io/docs/api/websocket/).
+This Python script retrieves statistics from [Guelph Hydro](https://www.guelphhydro.com/) and imports them into Home Assistant via the [WebSocket API](https://developers.home-assistant.io/docs/api/websocket/) and InfluxDB.
 
 Long Term Statistics will be created in Home Assistant and usable in the Energy Dashboard.
 
 ## Pre-requisites
 - Python 3.5 or higher
 - A running instance of Home Assistant 2022.10.0 or higher
-- A running instance of MyElectricalData 0.8.13-11 or higher
-- MyElectricalData must be configured with the cache and hourly details enabled, cf. [wiki](https://github.com/m4dm4rtig4n/myelectricaldata/wiki/03.-Configuration)
+- A running instance of InfluxDB OSS 2.0 or higher
 - A Long-lived access token created in Home Assistant
 
 ## Installation
@@ -27,8 +26,12 @@ Rename the `script_config.example.yaml` file to `script_config.yaml` and edit it
 - `ha_url`: URL of your Home Assistant instance
 - `ha_use_ssl`: Specify if Home Assistant uses SSL or not
 - `ha_access_token`: Long-lived access token for your Home Assistant instance
-- `med_cache_db_path`: Path to the cache database of MyElectricalData
-- `med_config_path`: Path to the configuration file of MyElectricalData
+- `hydro_username`:  Username to access Guelph Hydro portal
+- `hydro_password`: Password to access Guelph Hydro portal
+- `influx_token`: InfluxDB access token
+- `influx_url`:  InfluxDB instance URL
+- `influx_bucket`: name of the bucket to store data
+- `influx_org`:  InfluxDB org name
 
 ## Usage
 
