@@ -3,4 +3,4 @@ pytz
 PyYAML
 requests
 pandas
-inflxdb-client
+influxdb-client
