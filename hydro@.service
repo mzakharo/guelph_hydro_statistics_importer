@@ -1,0 +1,11 @@
+[Unit]
+Description=hydro sync service
+Wants=hydro@.timer
+
+[Service]
+ExecStart=/usr/bin/python3 /home/%i/guelph_hydro_statistics_importer/statistics_importer.py
+WorkingDirectory=/home/%i/guelph_hydro_statistics_importer
+User=%i
+
+[Install]
+WantedBy=multi-user.target
