@@ -1,6 +1,6 @@
-aiohttp==3.8.4
-pytz==2023.2
-PyYAML==6.0
+aiohttp
+pytz
+PyYAML
 requests
 pandas
 inflxdb-client
