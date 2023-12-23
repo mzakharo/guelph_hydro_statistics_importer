@@ -4,7 +4,7 @@ Requires=hydro@.service
 
 [Timer]
 Unit=hydro@.service
-OnCalendar=*-*-* 6:00:00
+OnCalendar=*-*-* 6:30:00
 Persistent=true
 
 [Install]
