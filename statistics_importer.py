@@ -23,11 +23,14 @@ import requests
 import pandas as pd
 from io import BytesIO
 
+timeout = 120
+
 def get_df(start , end, username, password):
     with requests.Session() as s:
         r = s.post(
             "https://apps.guelphhydro.com/AccountOnlineWeb/AccountOnlineCommand",
             params={"command": "login", "TokenID": "null", "Reset": "null"},
+            timeout=timeout,
             data={
                 "acn": username,
                 "pass": password,
@@ -46,6 +49,7 @@ def get_df(start , end, username, password):
                 "https://apps.guelphhydro.com/AccountOnlineWeb/ChartServlet",
                 params={"DownloadRawDataVertical": "true", "UsageType": "DownloadRawDataVertical"},
                 data={"StartDate": start, "EndDate": end, "framing" : "TOU", "Submit": "Submit"},
+                timeout=timeout,
             )
             assert (r.status_code == 200)
             return pd.read_csv(BytesIO(r.content))
@@ -53,6 +57,7 @@ def get_df(start , end, username, password):
             r = s.get(
                 "https://apps.guelphhydro.com/AccountOnlineWeb/AccountOnlineCommand",
                 params={"command": "logout"},
+                timeout=timeout,
             )
 
 
