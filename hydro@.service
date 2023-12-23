@@ -6,6 +6,8 @@ Wants=hydro@.timer
 ExecStart=/usr/bin/python3 -u /home/%i/guelph_hydro_statistics_importer/statistics_importer.py
 WorkingDirectory=/home/%i/guelph_hydro_statistics_importer
 User=%i
+Restart=on-failure
+RestartSec=30min
 
 [Install]
 WantedBy=multi-user.target
